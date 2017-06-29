@@ -39,6 +39,7 @@ my $test=0;
 my $artifact=0;
 my $debug=0;
 my $disableMcs=0;
+my $mcsOnly=0;
 my $buildUsAndBoo=0;
 my $artifactsCommon=0;
 my $artifactsRuntime=1;
@@ -88,6 +89,7 @@ GetOptions(
 	'artifactsruntime=i'=>\$artifactsRuntime,
 	'debug=i'=>\$debug,
 	'disablemcs=i'=>\$disableMcs,
+	'mcsonly=i'=>\$mcsOnly,
 	'buildusandboo=i'=>\$buildUsAndBoo,
 	'runtimetests=i'=>\$runRuntimeTests,
 	'classlibtests=i'=>\$runClasslibTests,
@@ -262,6 +264,14 @@ if ($build)
 	push @configureparams, "--disable-btls";  #this removes the dependency on cmake to build btls for now
 	push @configureparams, "--with-mcs-docs=no";
 	push @configureparams, "--prefix=$monoprefix";
+
+	if(!($disableMcs))
+	{
+		push @configureparams, "--with-unityjit=yes";
+
+		# TODO by Mike : Uncomment once ready
+		#push @configureparams, "--with-unityaot=yes";
+	}
 
 	if ($isDesktopBuild)
 	{
@@ -1244,8 +1254,11 @@ if ($build)
 	{
 		if ($clean)
 		{
-			print(">>> Cleaning $monoprefix\n");
-			rmtree($monoprefix);
+			if (!($mcsOnly))
+			{
+				print(">>> Cleaning $monoprefix\n");
+				rmtree($monoprefix);
+			}
 
 			# Avoid "source directory already configured" ...
 			system('rm', '-f', 'config.status', 'eglib/config.status', 'libgc/config.status');
@@ -1257,8 +1270,18 @@ if ($build)
 
 			system('./autogen.sh', @configureparams) eq 0 or die ('failing autogenning mono');
 
-			print("\n>>> Calling make clean in mono\n");
-			system("make","clean") eq 0 or die ("failed to make clean\n");
+			if ($mcsOnly)
+			{
+				print("\n>>> Calling make clean in mcs\n");
+				chdir("$monoroot/mcs");
+				system("make","clean") eq 0 or die ("failed to make clean\n");
+				chdir("$monoroot");
+			}
+			else
+			{
+				print("\n>>> Calling make clean in mono\n");
+				system("make","clean") eq 0 or die ("failed to make clean\n");
+			}
 		}
 
 		# this step needs to run after configure
@@ -1290,15 +1313,17 @@ if ($build)
 		}
 
 
-		print("\n>>> Calling make\n");
-		system("make $mcs -j$jobs") eq 0 or die ('Failed to make\n');
-
-		if (!($disableMcs))
+		if ($mcsOnly)
 		{
-			print(">>> Making the netstandard facades for net_4_x\n");
-			chdir("$monoroot/mcs/class/Facades/netstandard") eq 1 or die ("failed to chdir to netstandard facade directory\n");
-			system("make") eq 0 or die("failed to run make netstandard facade for net_4_x profile\n");
-			chdir("$monoroot") eq 1 or die ("failed to chdir to $monoroot\n");
+			print("\n>>> Calling make in mcs\n");
+			chdir("$monoroot/mcs");
+			system("make") eq 0 or die ("Failed to make in mcs\n");
+			chdir("$monoroot");
+		}
+		else
+		{
+			print("\n>>> Calling make\n");
+			system("make $mcs -j$jobs") eq 0 or die ('Failed to make\n');
 		}
 
 		if ($isDesktopBuild)
@@ -1349,16 +1374,26 @@ if ($build)
 		system("cp -R $addtoresultsdistdir/bin/. $monoprefix/bin/") eq 0 or die ("Failed copying $addtoresultsdistdir/bin to $monoprefix/bin\n");
 	}
 
-	if ($aotProfile ne "")
+	if(!($disableMcs))
 	{
-		print(">>> Copying $aotProfile to prefix directory named $aotProfileDestName\n");
-		system("cp -r $monoroot/mcs/class/lib/$aotProfile $monoprefix/lib/mono/$aotProfileDestName") eq 0 or die("Failed copying $monoroot/mcs/class/lib/$aotProfile to $monoprefix/lib/mono/$aotProfileDestName");
+		my @additionalProfiles = ();
+		push @additionalProfiles, "unityjit";
+		#push @additionalProfiles, "unityaot";
 
-		# Clean up some stuff we don't need/want
-		system("rm -rf $monoprefix/lib/mono/$aotProfileDestName/.stamp");
-		system("rm -rf $monoprefix/lib/mono/$aotProfileDestName/bare");
-		system("rm -rf $monoprefix/lib/mono/$aotProfileDestName/plaincore");
-		system("rm -rf $monoprefix/lib/mono/$aotProfileDestName/secxml");
+		foreach my $profileName(@additionalProfiles)
+		{
+			print(">>> Copying $profileName to prefix directory\n");
+			my $profileDestDir = "$monoprefix/lib/mono/$profileName";
+
+			print(">>> Cleaning $profileDestDir\n");
+			system("rm -rf $profileDestDir");
+
+			system("mkdir -p $profileDestDir") eq 0 or die("failed to make directory $profileDestDir\n");
+			system("mkdir -p $profileDestDir/Facades") eq 0 or die("failed to make directory $profileDestDir/Facades\n");
+
+			system("cp $monoroot/mcs/class/lib/$profileName/*.dll $profileDestDir") eq 0 or die("Failed copying dlls from $monoroot/mcs/class/lib/$profileName to $profileDestDir\n");
+			system("cp $monoroot/mcs/class/lib/$profileName/Facades/*.dll $profileDestDir/Facades") eq 0 or die("Failed copying dlls from $monoroot/mcs/class/lib/$profileName/Facades to $profileDestDir/Facades\n");
+		}
 	}
 }
 else
@@ -1415,6 +1450,9 @@ if ($artifact)
 
 		if (not $disableNormalProfile)
 		{
+			print(">>> Cleaning $distdir/lib\n");
+			system("rm -rf $distdir/lib");
+
 			print(">>> Creating normal profile artifacts...\n");
 			system("cp -R $addtoresultsdistdir/. $distdir/") eq 0 or die ("Failed copying $addtoresultsdistdir to $distdir\n");
 
@@ -1449,6 +1487,9 @@ if ($artifact)
 				system("rm -rf $distdirlibmono/gac/nunit*");
 			}
 		}
+
+		# Remove a self referencing sym link that causes problems
+		system("rm -rf $monoprefix/bin/bin");
 
 		if (-f "$monoroot/ZippedClasslibs.tar.gz")
 		{
